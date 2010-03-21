@@ -78,7 +78,13 @@ loop(Backend, Lines, Sorter) ->
 %% Collects stats from the VM and send a report to the frontend
 backend_loop(Freq, Frontend) ->
 	Frontend ! {backend, collect(Freq)},
-	backend_loop(Freq, Frontend). 
+	receive
+		_ ->
+			backend_loop(Freq, Frontend)
+	after
+		0 ->
+			backend_loop(Freq, Frontend)
+	end.
 
 
 %% ----------------------------------------------------------------------------- 
