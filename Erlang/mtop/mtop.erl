@@ -24,35 +24,36 @@
 %% authors and should not be interpreted as representing official policies, either expressed
 %% or implied, of Martin Carlson.
 -module(mtop).
--export([start/1]).
+-export([start/1, start_backend/2]).
 -import(proplists, [get_value/3]).
 
 
-
-
 %% ----------------------------------------------------------------------------- 
-%% Process
+%% Exported API
 %% ----------------------------------------------------------------------------- 
 
 
 %% Starts the mtop monitoring
 %% Example start([{freq, 3000}, {lines, 5}, {sort_on, reductions}]).
 start(Options) ->
-	Node = get_value(node, Options, node()),
-	ensure_loaded(Node),
 	spawn(fun() ->
 		        register(mtop, self()),
-		        Frontend = self(),
-		        F = fun() ->
-			               backend_loop(get_value(freq, Options, 1000),
-			                            Frontend)
-		        end,
-		        Backend = spawn_link(Node, F),
+		        Backend = start_backend(self(), Options),
 		        loop(Backend, get_value(lines, Options, 5),
 		             get_value(sorter, Options,
 		                       sorter(get_value(sort_on, Options,
 		                                        [growth, reductions]))))
 	      end).
+
+
+%% Starts the backend loop
+start_backend(Frontend, Options) ->
+	Node = get_value(node, Options, node()),
+	ensure_loaded(Node),
+	spawn_link(Node,
+	           fun() ->
+		              backend_loop(get_value(freq, Options, 1000), Frontend)
+	           end).
 
 
 %% ----------------------------------------------------------------------------- 
@@ -71,8 +72,6 @@ loop(Backend, Lines, Sorter) ->
 			loop(Backend, Lines, Sorter);
 		_    ->
 			loop(Backend, Lines, Sorter)
-	after
-		0    -> loop(Backend, Lines, Sorter)
 	end.
 
 
