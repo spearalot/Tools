@@ -33,7 +33,12 @@
 
 
 %% -----------------------------------------------------------------
-%% Purpose: Trace the time deltaerence between an
+%% Delta Profiler
+%% -----------------------------------------------------------------
+
+
+%% -----------------------------------------------------------------
+%% Purpose: Trace the time delta between an
 %%          accumulator function and an over all function.
 %% Example: mprof:delta(wheris(server), server, connect, gen_tcp, connect).
 %% -----------------------------------------------------------------
@@ -49,32 +54,33 @@ delta_stop() ->
 
 
 %% -----------------------------------------------------------------
-%% Purpose: Tracer for tracing the time deltaerence between an
-%%          accumulator function and an over all function.
+%% Purpose: Tracer for tracing the delta (time) between an
+%%          accumulator function and an encapsulating function.
+%%          Note: This is the equ. of OWN vs. ACC in fprof.
 %% -----------------------------------------------------------------
 delta_tracer({OM, OF, _} = Overall, Acc) ->
 	fun(init) ->
-		    {[Overall, Acc], delta_stats(init)};
+		   {[Overall, Acc], delta_stats(init)};
 	   ({terminate, _}) ->
-		    ok;
+		   ok;
 	   ({{call, _, M, F, _}, _}) when M == OM, F == OF ->
-			delta_stats(init);
+		   delta_stats(init);
 	   ({{call, _, _, _, _}, St}) ->
-			delta_stats(call, St);
+		   delta_stats(call, St);
 	   ({{return, _, M, F, _, _}, St}) when M == OM, F == OF ->
-			delta_stats_report(delta_stats(get, St)),
-			St;
-		({{return, _, _, _, _, _}, St}) ->
-			delta_stats(return, St);
-		({{info, Msg}, St}) ->
-			io:format("Unknown message: ~p~n", [Msg]),
-			delta_stats_report(delta_stats(get, St)),
-			St
+		   delta_stats_report(delta_stats(get, St)),
+		   St;
+	   ({{return, _, _, _, _, _}, St}) ->
+		   delta_stats(return, St);
+	   ({{info, Msg}, St}) ->
+		   io:format("Unknown message: ~p~n", [Msg]),
+		   delta_stats_report(delta_stats(get, St)),
+		   St
 	end.
 
 
 %% -----------------------------------------------------------------
-%% Purpose: Calculate an accumulated call time vs an overall call time.
+%% Purpose: Calculate an accumulated call-time vs an overall call-time.
 %% -----------------------------------------------------------------
 delta_stats(init) ->
 	delta_stats(reset);
@@ -95,6 +101,11 @@ delta_stats_report({Overall, AccT, AccC}) ->
 	io:format("Overall: ~.4f sec Accumulated: ~.4f sec (~.2f %) Count: ~p~n",
 	          [Overall / 1000000, AccT / 1000000,
 	           AccT / Overall * 100, AccC]).
+
+
+%% -----------------------------------------------------------------
+%% Generic Profiler
+%% -----------------------------------------------------------------
 
 
 %% -----------------------------------------------------------------
@@ -145,19 +156,22 @@ trace_loop(Tracer, St) ->
 %% Purpose: Turn trace flags and patterns on
 %% -----------------------------------------------------------------
 trace_on(ProcSet, Patterns) ->
-	erlang:trace(ProcSet, true, [call]),
-	F = fun(Pattern) ->
-		       erlang:trace_pattern(Pattern, [?RETURN_PATTERN], [global])
-	    end,
-	lists:foreach(F, Patterns).
+	set_trace(ProcSet, true, Patterns, [?RETURN_PATTERN]).
 
 
 %% -----------------------------------------------------------------
 %% Purpose: Turn trace flags and patterns off
 %% -----------------------------------------------------------------
 trace_off(ProcSet, Patterns) ->
-	erlang:trace(ProcSet, false, [call]),
+	set_trace(ProcSet, false, Patterns, false).
+
+
+%% -----------------------------------------------------------------
+%% Purpose: Set trace patterns and flags
+%% -----------------------------------------------------------------
+set_trace(ProcSet, Enable, Patterns, Flags) ->
+	erlang:trace(ProcSet, Enable, [call]),
 	F = fun(Pattern) ->
-		       erlang:trace_pattern(Pattern, false, [global])
+		       erlang:trace_pattern(Pattern, Flags, [global])
 	    end,
 	lists:foreach(F, Patterns).
