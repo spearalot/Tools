@@ -24,9 +24,17 @@
 %% authors and should not be interpreted as representing official policies, either expressed
 %% or implied, of Martin Carlson.
 -module(mtop).
--export([start/1, start_backend/2]).
+-export([start/1, sort/1, lines/1, stop/0, quiet/1]).
 -import(proplists, [get_value/3]).
 
+-define(DEFAULT_SORT, [growth, reductions]).
+
+-record(state, {
+	backend,
+	lines,
+	sorter,
+	quiet
+}).
 
 %% ----------------------------------------------------------------------------- 
 %% Exported API
@@ -34,15 +42,16 @@
 
 
 %% Starts the mtop monitoring
-%% Example start([{freq, 3000}, {lines, 5}, {sort_on, reductions}]).
+%% Example start([{freq, 3000}, {lines, 5}, {sort_on, [message_queue_len]}]).
 start(Options) ->
 	spawn(fun() ->
 		        register(mtop, self()),
-		        Backend = start_backend(self(), Options),
-		        loop(Backend, get_value(lines, Options, 5),
-		             get_value(sorter, Options,
-		                       sorter(get_value(sort_on, Options,
-		                                        [growth, reductions]))))
+				loop(#state{
+					backend = start_backend(self(), Options), 
+					lines = get_value(lines, Options, 5), 
+					sorter = get_value(sorter, Options, sorter(get_value(sort_on, Options, ?DEFAULT_SORT))), 
+					quiet = get_value(quiet, Options, false)
+				})
 	      end).
 
 
@@ -50,10 +59,33 @@ start(Options) ->
 start_backend(Frontend, Options) ->
 	Node = get_value(node, Options, node()),
 	ensure_loaded(Node),
-	spawn_link(Node,
-	           fun() ->
-		              backend_loop(get_value(freq, Options, 1000), Frontend)
-	           end).
+	spawn_link(Node, fun() ->
+		backend_loop(get_value(freq, Options, 1000), Frontend)
+	end).
+
+
+sort(By) when is_list(By) ->
+	mtop ! {sort, By},
+	ok.
+
+
+lines(N) when is_integer(N), N > 1 ->
+	mtop ! {lines, N},
+	ok.
+
+
+stop() ->
+	case whereis(mtop) of
+		undefined -> 
+			false;
+		Pid -> 
+			Pid ! stop,
+			true
+	end.
+
+quiet(Switch) ->
+	mtop ! {quiet, Switch},
+	ok.
 
 
 %% ----------------------------------------------------------------------------- 
@@ -62,16 +94,24 @@ start_backend(Frontend, Options) ->
 
 
 %% Loops with at most 'Freq' freequenzy,
-%% prints the 'Lines' top processes using 'Sorter.
-loop(Backend, Lines, Sorter) ->
+%% prints the 'Lines' top processes using 'Sorter'.
+loop(State) ->
 	receive
 		stop ->
-			ok;
+			State#state.backend ! {stop, self()};
+		{sort, S} ->
+			loop(State#state{sorter = sorter(S)});
+		{lines, N} ->
+			loop(State#state{lines = N});
+		{quiet, Quiet} ->
+			loop(State#state{quiet = Quiet});
+		{backend, _Stats} when State#state.quiet ->
+			loop(State);
 		{backend, Stats} ->
-			print_stats(lists:sublist(lists:sort(Sorter, Stats), 1, Lines)),
-			loop(Backend, Lines, Sorter);
-		_    ->
-			loop(Backend, Lines, Sorter)
+			print_stats(lists:sublist(lists:sort(State#state.sorter, Stats), State#state.lines)),
+			loop(State);
+		_ ->
+			loop(State)
 	end.
 
 
@@ -79,6 +119,8 @@ loop(Backend, Lines, Sorter) ->
 backend_loop(Freq, Frontend) ->
 	Frontend ! {backend, collect(Freq)},
 	receive
+		{stop, Frontend} ->
+			ok;
 		_ ->
 			backend_loop(Freq, Frontend)
 	after
@@ -86,11 +128,9 @@ backend_loop(Freq, Frontend) ->
 			backend_loop(Freq, Frontend)
 	end.
 
-
 %% ----------------------------------------------------------------------------- 
 %% Utility functions
 %% ----------------------------------------------------------------------------- 
-
 
 %% Collects stats over 'Freq' time and collect delta.
 collect(Freq) ->
@@ -125,28 +165,50 @@ growth(A, B) ->
 
 
 %% Prints a MFA as standard representation
-mfa_to_list({M, F, A}) -> lists:concat([M, ":", F, "/", integer_to_list(A)]).
+mfa_to_list({M, F, A}) -> lists:concat([M, ":", F, "/", integer_to_list(A)]);
+mfa_to_list(_)         -> "N/A".
 
 
 %% Print the stats of the first 'Lines' processes
 print_stats(Procs) when is_list(Procs) ->
-	io:put_chars([io_lib:format("~.20s~.10s~.10s~.10s~.25s~n",
-	                            ["PID", "RED", "MEM", "MSG", "FUNCTION"]),
-	              lists:map(fun print_info_summery/1, Procs)]).
+	io:put_chars([
+		io_lib:format("~.25s ~.10s ~.10s ~.10s ~.25s ~.10s~n", ["PID", "RED", "MEM", "MSG", "FUNCTION", "ACC"]),
+	    lists:map(fun info_summery/1, Procs), $\n, $\n
+	]).
 
 
 %% Prints a summery line of 'Info'
-print_info_summery(Info) ->
-	[string:left(pid_to_list(value([proc], Info, exit)), 20),
-	 string:left(scale(value([reductions], Info, exit)), 10),
+info_summery(Info) ->
+	[
+		info_pid(Info),  " ", 
+		info_reds(Info), " ", 
+		info_size(Info), " ",
+		info_qlen(Info), " ",
+		info_mfa(Info),  "\n"
+	 ].
+
+info_pid(Info) -> 
+	case value([registered_name], Info, undefined) of
+		undefined -> string:left(pid_to_list(value([proc], Info, exit)), 25);
+		Name      -> string:left(atom_to_list(Name), 25)
+	end.
+
+info_reds(Info) -> 
+	 string:left(scale(value([reductions], Info, exit)), 10).
+
+info_size(Info) ->
 	 string:left(scale(value([heap_size], Info, exit) +
-	                   value([stack_size], Info, exit)), 10),
-	 string:left(scale(value([message_queue_len], Info, exit)), 10),
-	 string:left(mfa_to_list(value([current_function], Info, exit)), 25),
-	 $\n].
+	                   value([stack_size], Info, exit)), 10).
+
+info_qlen(Info) ->
+	string:left(scale(value([message_queue_len], Info, exit)), 10).
+
+info_mfa(Info) ->
+	string:left(mfa_to_list(value([current_function], Info, exit)), 25).
 
 
 %% Sorter factory, creates sorter of processes (decending) according to 'Key'
+sorter(Key) when is_atom(Key) -> sorter([Key]);
 sorter(Key) -> fun(A, B) -> value(Key, A, 0) > value(Key, B, 0) end.
 
 
